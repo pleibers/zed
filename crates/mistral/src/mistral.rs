@@ -76,6 +76,9 @@ pub enum Model {
     #[serde(rename = "pixtral-large-latest", alias = "pixtral-large-latest")]
     PixtralLargeLatest,
 
+    #[serde(rename = "labs-leanstral-2603", alias = "labs-leanstral-2603")]
+    Leanstral2603,
+
     #[serde(rename = "custom")]
     Custom {
         name: String,
@@ -109,6 +112,7 @@ impl Model {
             "devstral-small-latest" => Ok(Self::DevstralSmallLatest),
             "pixtral-12b-latest" => Ok(Self::Pixtral12BLatest),
             "pixtral-large-latest" => Ok(Self::PixtralLargeLatest),
+            "labs-leanstral-2603" => Ok(Self::Leanstral2603),
             invalid_id => anyhow::bail!("invalid model id '{invalid_id}'"),
         }
     }
@@ -127,6 +131,7 @@ impl Model {
             Self::DevstralSmallLatest => "devstral-small-latest",
             Self::Pixtral12BLatest => "pixtral-12b-latest",
             Self::PixtralLargeLatest => "pixtral-large-latest",
+            Self::Leanstral2603 => "labs-leanstral-2603",
             Self::Custom { name, .. } => name,
         }
     }
@@ -145,6 +150,7 @@ impl Model {
             Self::DevstralSmallLatest => "devstral-small-latest",
             Self::Pixtral12BLatest => "pixtral-12b-latest",
             Self::PixtralLargeLatest => "pixtral-large-latest",
+            Self::Leanstral2603 => "labs-leanstral-2603",
             Self::Custom {
                 name, display_name, ..
             } => display_name.as_ref().unwrap_or(name),
@@ -165,6 +171,7 @@ impl Model {
             Self::DevstralSmallLatest => 256000,
             Self::Pixtral12BLatest => 128000,
             Self::PixtralLargeLatest => 128000,
+            Self::Leanstral2603 => 256000,
             Self::Custom { max_tokens, .. } => *max_tokens,
         }
     }
@@ -191,7 +198,8 @@ impl Model {
             | Self::DevstralMediumLatest
             | Self::DevstralSmallLatest
             | Self::Pixtral12BLatest
-            | Self::PixtralLargeLatest => true,
+            | Self::PixtralLargeLatest
+            | Self::Leanstral2603 => true,
             Self::Custom { supports_tools, .. } => supports_tools.unwrap_or(false),
         }
     }
@@ -201,7 +209,8 @@ impl Model {
             Self::Pixtral12BLatest
             | Self::PixtralLargeLatest
             | Self::MistralMediumLatest
-            | Self::MistralSmallLatest => true,
+            | Self::MistralSmallLatest
+            | Self::Leanstral2603 => true,
             Self::CodestralLatest
             | Self::MistralLargeLatest
             | Self::MagistralMediumLatest
@@ -218,7 +227,9 @@ impl Model {
 
     pub fn supports_thinking(&self) -> bool {
         match self {
-            Self::MagistralMediumLatest | Self::MagistralSmallLatest => true,
+            Self::MagistralMediumLatest | Self::MagistralSmallLatest | Self::Leanstral2603 => {
+                true
+            }
             Self::Custom {
                 supports_thinking, ..
             } => supports_thinking.unwrap_or(false),
@@ -242,6 +253,8 @@ pub struct Request {
     pub response_format: Option<ResponseFormat>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffort>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parallel_tool_calls: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -284,6 +297,13 @@ pub enum ToolChoice {
     Any,
     #[serde(untagged)]
     Function(ToolDefinition),
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    High,
+    None,
 }
 
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]

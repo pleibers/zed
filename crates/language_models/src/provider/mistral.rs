@@ -292,6 +292,10 @@ impl LanguageModel for MistralLanguageModel {
         self.model.supports_images()
     }
 
+    fn supports_thinking(&self) -> bool {
+        self.model.supports_thinking()
+    }
+
     fn telemetry_id(&self) -> String {
         format!("mistral/{}", self.model.id())
     }
@@ -511,6 +515,19 @@ pub fn into_mistral(
         }
     }
 
+    let reasoning_effort = if model.supports_thinking() {
+        Some(if request.thinking_allowed {
+            match request.thinking_effort.as_deref() {
+                Some("none") => mistral::ReasoningEffort::None,
+                _ => mistral::ReasoningEffort::High,
+            }
+        } else {
+            mistral::ReasoningEffort::None
+        })
+    } else {
+        None
+    };
+
     (
         mistral::Request {
             model: model.id().to_string(),
@@ -537,6 +554,7 @@ pub fn into_mistral(
                 _ if !request.tools.is_empty() => Some(mistral::ToolChoice::Auto),
                 _ => None,
             },
+            reasoning_effort,
             parallel_tool_calls: if !request.tools.is_empty() {
                 Some(false)
             } else {
@@ -1072,6 +1090,54 @@ mod tests {
             } if content == r#"{"status":"Paid"}"#
                 && name == "retrieve_payment_status"
                 && tool_call_id == "D681PevKs"
+        ));
+    }
+
+    #[test]
+    fn test_into_mistral_supports_leanstral_reasoning_and_capabilities() {
+        let request = LanguageModelRequest {
+            messages: vec![LanguageModelRequestMessage {
+                role: Role::User,
+                content: vec![
+                    MessageContent::Text("Prove this lemma.".into()),
+                    MessageContent::Image(LanguageModelImage {
+                        source: "base64data".into(),
+                        size: None,
+                    }),
+                ],
+                cache: false,
+                reasoning_details: None,
+            }],
+            tools: vec![],
+            tool_choice: None,
+            temperature: Some(1.0),
+            thread_id: None,
+            prompt_id: None,
+            intent: None,
+            stop: vec![],
+            thinking_allowed: true,
+            thinking_effort: Some("high".into()),
+            speed: None,
+        };
+
+        let leanstral = mistral::Model::from_id("labs-leanstral-2603").unwrap();
+        assert!(leanstral.supports_tools());
+        assert!(leanstral.supports_images());
+        assert!(leanstral.supports_thinking());
+        assert_eq!(leanstral.max_token_count(), 256000);
+
+        let (mistral_request, _) = into_mistral(request, leanstral, None);
+
+        assert_eq!(mistral_request.model, "labs-leanstral-2603");
+        assert_eq!(
+            mistral_request.reasoning_effort,
+            Some(mistral::ReasoningEffort::High)
+        );
+        assert!(matches!(
+            &mistral_request.messages[0],
+            mistral::RequestMessage::User {
+                content: mistral::MessageContent::Multipart { content },
+            } if content.len() == 2
         ));
     }
 }
