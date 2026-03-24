@@ -306,6 +306,7 @@ pub enum RequestMessage {
     },
     Tool {
         content: String,
+        name: String,
         tool_call_id: String,
     },
 }

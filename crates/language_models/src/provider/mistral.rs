@@ -401,6 +401,7 @@ pub fn into_mistral(
                             };
                             messages.push(mistral::RequestMessage::Tool {
                                 content: tool_content,
+                                name: tool_result.tool_name.to_string(),
                                 tool_call_id: tool_result.tool_use_id.to_string(),
                             });
                         }
@@ -455,8 +456,11 @@ pub fn into_mistral(
                                 },
                             };
 
-                            if let Some(mistral::RequestMessage::Assistant { tool_calls, .. }) =
-                                messages.last_mut()
+                            if let Some(mistral::RequestMessage::Assistant {
+                                content,
+                                tool_calls,
+                            }) = messages.last_mut()
+                                && content.is_none()
                             {
                                 tool_calls.push(tool_call);
                             } else {
@@ -880,7 +884,11 @@ impl Render for ConfigurationView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use language_model::{LanguageModelImage, LanguageModelRequestMessage, MessageContent};
+    use language_model::{
+        LanguageModelImage, LanguageModelRequestMessage, LanguageModelToolResult,
+        LanguageModelToolResultContent, LanguageModelToolUse, MessageContent,
+    };
+    use serde_json::json;
 
     #[test]
     fn test_into_mistral_basic_conversion() {
@@ -979,5 +987,91 @@ mod tests {
                 mistral::MessagePart::ImageUrl { image_url } if image_url.starts_with("data:image/png;base64,")
             ));
         }
+    }
+
+    #[test]
+    fn test_into_mistral_separates_assistant_text_from_tool_calls_and_includes_tool_name() {
+        let request = LanguageModelRequest {
+            messages: vec![
+                LanguageModelRequestMessage {
+                    role: Role::Assistant,
+                    content: vec![
+                        MessageContent::Text("Let me check that.".into()),
+                        MessageContent::ToolUse(LanguageModelToolUse {
+                            id: "D681PevKs".into(),
+                            name: "retrieve_payment_status".into(),
+                            raw_input: r#"{"transaction_id":"T1001"}"#.into(),
+                            input: json!({ "transaction_id": "T1001" }),
+                            is_input_complete: true,
+                            thought_signature: None,
+                        }),
+                    ],
+                    cache: false,
+                    reasoning_details: None,
+                },
+                LanguageModelRequestMessage {
+                    role: Role::User,
+                    content: vec![MessageContent::ToolResult(LanguageModelToolResult {
+                        tool_use_id: "D681PevKs".into(),
+                        tool_name: "retrieve_payment_status".into(),
+                        is_error: false,
+                        content: LanguageModelToolResultContent::Text(
+                            r#"{"status":"Paid"}"#.into(),
+                        ),
+                        output: None,
+                    })],
+                    cache: false,
+                    reasoning_details: None,
+                },
+            ],
+            tools: vec![],
+            tool_choice: None,
+            temperature: None,
+            thread_id: None,
+            prompt_id: None,
+            intent: None,
+            stop: vec![],
+            thinking_allowed: true,
+            thinking_effort: None,
+            speed: None,
+        };
+
+        let (mistral_request, _) = into_mistral(request, mistral::Model::MistralLargeLatest, None);
+
+        assert_eq!(mistral_request.messages.len(), 3);
+        assert!(matches!(
+            &mistral_request.messages[0],
+            mistral::RequestMessage::Assistant {
+                content: Some(mistral::MessageContent::Plain { content }),
+                tool_calls,
+            } if content == "Let me check that." && tool_calls.is_empty()
+        ));
+        assert!(matches!(
+            &mistral_request.messages[1],
+            mistral::RequestMessage::Assistant {
+                content: None,
+                tool_calls,
+            } if matches!(
+                tool_calls.as_slice(),
+                [mistral::ToolCall {
+                    id,
+                    content: mistral::ToolCallContent::Function {
+                        function: mistral::FunctionContent { name, arguments }
+                    }
+                }] if id == "D681PevKs"
+                    && name == "retrieve_payment_status"
+                    && arguments == r#"{"transaction_id":"T1001"}"#
+            )
+        ));
+        assert!(matches!(
+            &mistral_request.messages[2],
+            mistral::RequestMessage::Tool {
+                content,
+                name,
+                tool_call_id,
+            } if content == r#"{"status":"Paid"}"#
+                && name == "retrieve_payment_status"
+                && tool_call_id == "D681PevKs"
+        ));
     }
 }
