@@ -29,6 +29,8 @@ const PROVIDER_NAME: LanguageModelProviderName = LanguageModelProviderName::new(
 
 const API_KEY_ENV_VAR_NAME: &str = "MISTRAL_API_KEY";
 static API_KEY_ENV_VAR: LazyLock<EnvVar> = env_var!(API_KEY_ENV_VAR_NAME);
+const MISTRAL_TOOL_CALL_ID_PREFIX: &str = "tool";
+const MISTRAL_TOOL_CALL_ID_DIGITS: usize = 5;
 
 #[derive(Default, Clone, Debug, PartialEq)]
 pub struct MistralSettings {
@@ -362,6 +364,7 @@ pub fn into_mistral(
     let stream = true;
 
     let mut messages = Vec::new();
+    let mut tool_call_ids = MistralToolCallIdMap::default();
     for message in &request.messages {
         match message.role {
             Role::User => {
@@ -401,7 +404,8 @@ pub fn into_mistral(
                             };
                             messages.push(mistral::RequestMessage::Tool {
                                 content: tool_content,
-                                tool_call_id: tool_result.tool_use_id.to_string(),
+                                tool_call_id: tool_call_ids
+                                    .mistral_id(tool_result.tool_use_id.to_string()),
                             });
                         }
                     }
@@ -445,7 +449,7 @@ pub fn into_mistral(
                         MessageContent::Image(_) => {}
                         MessageContent::ToolUse(tool_use) => {
                             let tool_call = mistral::ToolCall {
-                                id: tool_use.id.to_string(),
+                                id: tool_call_ids.mistral_id(tool_use.id.to_string()),
                                 content: mistral::ToolCallContent::Function {
                                     function: mistral::FunctionContent {
                                         name: tool_use.name.to_string(),
@@ -552,6 +556,26 @@ pub fn into_mistral(
         },
         request.thread_id,
     )
+}
+
+#[derive(Default)]
+struct MistralToolCallIdMap {
+    ids_by_original_id: HashMap<String, String>,
+}
+
+impl MistralToolCallIdMap {
+    fn mistral_id(&mut self, original_id: String) -> String {
+        let next_id = self.ids_by_original_id.len();
+        self.ids_by_original_id
+            .entry(original_id)
+            .or_insert_with(|| {
+                format!(
+                    "{MISTRAL_TOOL_CALL_ID_PREFIX}{next_id:0width$}",
+                    width = MISTRAL_TOOL_CALL_ID_DIGITS
+                )
+            })
+            .clone()
+    }
 }
 
 pub struct MistralEventMapper {
@@ -880,7 +904,12 @@ impl Render for ConfigurationView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use language_model::{LanguageModelImage, LanguageModelRequestMessage, MessageContent};
+    use language_model::{
+        LanguageModelImage, LanguageModelRequestMessage, LanguageModelToolResult,
+        LanguageModelToolResultContent, MessageContent,
+    };
+    use serde_json::json;
+    use std::sync::Arc;
 
     #[test]
     fn test_into_mistral_basic_conversion() {
@@ -979,5 +1008,65 @@ mod tests {
                 mistral::MessagePart::ImageUrl { image_url } if image_url.starts_with("data:image/png;base64,")
             ));
         }
+    }
+
+    #[test]
+    fn test_into_mistral_normalizes_tool_call_ids() {
+        let original_tool_call_id = "toolu_01VC6iuuGR6bRGR7H1mUbzRV";
+        let request = LanguageModelRequest {
+            messages: vec![
+                LanguageModelRequestMessage {
+                    role: Role::Assistant,
+                    content: vec![MessageContent::ToolUse(LanguageModelToolUse {
+                        id: original_tool_call_id.into(),
+                        name: Arc::from("read_file"),
+                        raw_input: r#"{"path":"src/main.rs"}"#.into(),
+                        input: json!({ "path": "src/main.rs" }),
+                        is_input_complete: true,
+                        thought_signature: None,
+                    })],
+                    cache: false,
+                    reasoning_details: None,
+                },
+                LanguageModelRequestMessage {
+                    role: Role::User,
+                    content: vec![MessageContent::ToolResult(LanguageModelToolResult {
+                        tool_use_id: original_tool_call_id.into(),
+                        tool_name: Arc::from("read_file"),
+                        is_error: false,
+                        content: LanguageModelToolResultContent::Text(Arc::from("fn main() {}")),
+                        output: None,
+                    })],
+                    cache: false,
+                    reasoning_details: None,
+                },
+            ],
+            temperature: None,
+            tools: vec![],
+            tool_choice: None,
+            thread_id: None,
+            prompt_id: None,
+            intent: None,
+            stop: vec![],
+            thinking_allowed: true,
+            thinking_effort: None,
+            speed: None,
+        };
+
+        let (mistral_request, _) = into_mistral(request, mistral::Model::MistralSmallLatest, None);
+
+        let mistral::RequestMessage::Assistant { tool_calls, .. } = &mistral_request.messages[0]
+        else {
+            panic!("expected assistant tool call message");
+        };
+        let mistral::RequestMessage::Tool { tool_call_id, .. } = &mistral_request.messages[1]
+        else {
+            panic!("expected tool result message");
+        };
+
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].id.len(), 9);
+        assert!(tool_calls[0].id.chars().all(|c| c.is_ascii_alphanumeric()));
+        assert_eq!(tool_calls[0].id, *tool_call_id);
     }
 }
